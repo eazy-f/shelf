@@ -1,0 +1,8 @@
+{
+  "name": "shelf",
+  "description": "Shelf extensions local storage manager",
+  "type": "storage",
+  "path": "<the_path>",
+  "type": "stdio",
+  "allowed_extensions": ["shelf@eazy-f"]
+}

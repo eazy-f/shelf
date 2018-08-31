@@ -1,0 +1,25 @@
+{
+  "name": "shelf",
+  "version": "0.0.1",
+  "content_security_policy": "script-src 'self' 'unsafe-eval'; object-src 'self'",
+  "background": {
+    "scripts": [
+      "compiled/background/goog/base.js",
+      "setup.js",
+      "compiled/background/cljs_deps.js",
+      "background.js"
+    ]
+  },
+  "permissions": [
+    "*://localhost/*",
+    "storage",
+    "bookmarks",
+    "nativeMessaging"  
+  ],
+  "manifest_version": 2,
+  "applications": {
+    "gecko": {
+      "id": "shelf@eazy-f"
+    }
+  }
+}
