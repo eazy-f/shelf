@@ -13,9 +13,25 @@ class ListCommand:
         files = os.listdir(directory)
         return {'names': files}
 
+class SaveCommand:
+    def __init__(self, **args):
+        self.bookmarks = args['bookmarks']
+        self.log = args['log']
+        self.name = args['name']
+
+    def execute(self, directory):
+        filename = '{}.json'.format(self.name)
+        content = {
+            'bookmarks': self.bookmarks,
+            'log': self.log
+        }
+        with open(os.path.join(directory, filename), 'w') as target:
+            json.dump(content, target)
+
 def parse_command(command):
     registrations = {
-        'list': ListCommand
+        'list': ListCommand,
+        'save': SaveCommand
     }
     command_class = registrations[command['op']]
     return command_class(**command.get('args', {}))
@@ -25,8 +41,16 @@ def read_command():
     return parse_command(command)
 
 def execute(command, directory):
-    message = encode_message(command.execute(directory))
-    send_message(message)
+    message = {}
+    try:
+        reply = command.execute(directory)
+        message['result'] = 'success'
+        if reply is not None:
+            message['reply'] = reply
+    except Exception as e:
+        message['result'] = 'error'
+        sys.stderr.write('{}'.format(e))
+    send_message(encode_message(message))
 
 def get_message():
     raw_length = sys.stdin.buffer.read(4)
