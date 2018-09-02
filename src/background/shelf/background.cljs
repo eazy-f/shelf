@@ -4,9 +4,12 @@
   (:require [chromex.logging :refer-macros [log info warn error group group-end]]
             [chromex.ext.bookmarks :as bookmarks]
             [chromex.ext.runtime :as runtime]
+            [chromex.ext.storage :as storage]
+            [chromex.protocols :as storage-proto]
             [cljs.core.async :refer [<!]]))
 
 (def *app-name* "shelf")
+(def *client-id-storage-key* "client-id")
 
 (defn load-saved-bookmarks []
   (let [list-command (clj->js {:op "list"})
@@ -45,26 +48,42 @@
   (go
     (doseq [b (<! (load-browser-bookmarks))] (print b))))
 
+(defn log-added [bookmark]
+  {:added (:id bookmark)})
+
 (defn build-fresh-log [bookmarks]
-  ())
+  (map log-added bookmarks))
 
 (defn get-client-id []
-  "not-unique-at-all")
+  (go
+    (let [local (storage/get-local)
+          values (<! (storage-proto/get local *client-id-storage-key*))]
+      (if-let [id (aget (first (first values)) *client-id-storage-key*)]
+        id
+        (let [new-id (str "bookmarks-" (rand-int (* 256 256 256 256)))]
+          (storage-proto/set local (clj->js {*client-id-storage-key* new-id}))
+          new-id)))))
 
 (defn save-bookmarks [bookmarks log]
-  (let [args {:name (get-client-id)
-              :bookmarks (into () bookmarks)
-              :log (into () log)}
-        message (clj->js {:op "save" :args args})]
-    (go
+  (go
+    (let [args {:name (<! (get-client-id))
+                :bookmarks (into () bookmarks)
+                :log (into () log)}
+          message (clj->js {:op "save" :args args})]
       (-> (<! (runtime/send-native-message *app-name* message))
           (first)
           (.-result)
           (= "success")
           (assert "failed to save bookmarks")))))
-    
-(runonce
- (go
+
+(defn show [chan]
+  (go
+    (print (<! chan))))
+
+(defn refresh []
+  (go
    (let [saved (<! (load-saved-bookmarks))
          existing (<! (load-browser-bookmarks))]
      (save-bookmarks existing (build-fresh-log existing)))))
+    
+(runonce (refresh))
