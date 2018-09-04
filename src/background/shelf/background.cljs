@@ -10,15 +10,43 @@
 
 (def *app-name* "shelf")
 (def *client-id-storage-key* "client-id")
+(def *domain-storage-key* "domain")
+
+(defn get-or-generate [key prefix]
+  (go
+    (let [local (storage/get-local)
+          values (<! (storage-proto/get local key))]
+      (if-let [value (aget (first (first values)) key)]
+        value
+        (let [new-value (str prefix "-" (rand-int (* 256 256 256 256)))]
+          (storage-proto/set local (clj->js {key new-value}))
+          new-value)))))
+
+(defn get-domain []
+  (get-or-generate *domain-storage-key* "shelf-domain"))
+
+(defn get-client-id []
+  (get-or-generate *client-id-storage-key* "bookmarks"))
+
+(defn read-bookmarks-file [domain file-name]
+  (go
+    (let [command (clj->js {:op "load" :args {:name file-name} :domain domain})
+          reply (<! (runtime/send-native-message *app-name* command))
+          content (.-reply (first reply))]
+      (js->clj content))))
 
 (defn load-saved-bookmarks []
-  (let [list-command (clj->js {:op "list"})
-        store-chan (runtime/send-native-message *app-name* list-command)]
-    (go
-      (->> (<! store-chan)
-           (first)
-           (.-names)
-           (apply js/console.log)))))
+  (go
+    (let [domain (<! (get-domain))
+          list-command (clj->js {:op "list" :domain domain})
+          file-list-reply (<! (runtime/send-native-message *app-name* list-command))
+          file-list (.-names (.-reply (first file-list-reply)))]
+      (->>
+       (map #(read-bookmarks-file domain %) file-list)
+       (cljs.core.async/merge)
+       (cljs.core.async/into ())
+       ; FIXME: do something about this unwrapping
+       (<!)))))
 
 (defn fold-bookmark-tree- [tree stack acc]
   (if-let [head (first tree)]
@@ -54,22 +82,13 @@
 (defn build-fresh-log [bookmarks]
   (map log-added bookmarks))
 
-(defn get-client-id []
-  (go
-    (let [local (storage/get-local)
-          values (<! (storage-proto/get local *client-id-storage-key*))]
-      (if-let [id (aget (first (first values)) *client-id-storage-key*)]
-        id
-        (let [new-id (str "bookmarks-" (rand-int (* 256 256 256 256)))]
-          (storage-proto/set local (clj->js {*client-id-storage-key* new-id}))
-          new-id)))))
-
 (defn save-bookmarks [bookmarks log]
   (go
-    (let [args {:name (<! (get-client-id))
+    (let [domain (<! (get-domain))
+          args {:name (<! (get-client-id))
                 :bookmarks (into () bookmarks)
                 :log (into () log)}
-          message (clj->js {:op "save" :args args})]
+          message (clj->js {:op "save" :args args :domain domain})]
       (-> (<! (runtime/send-native-message *app-name* message))
           (first)
           (.-result)

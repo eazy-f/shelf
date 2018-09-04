@@ -4,6 +4,7 @@ import json
 import sys
 import os
 import struct
+import tempfile
 
 class ListCommand:
     def __init__(self):
@@ -12,6 +13,15 @@ class ListCommand:
     def execute(self, directory):
         files = os.listdir(directory)
         return {'names': files}
+
+class LoadCommand:
+    def __init__(self, name):
+        self.name = name
+
+    def execute(self, directory):
+        with open(os.path.join(directory, self.name)) as content:
+            document = json.load(content)
+            return document
 
 class SaveCommand:
     def __init__(self, **args):
@@ -28,23 +38,43 @@ class SaveCommand:
         with open(os.path.join(directory, filename), 'w') as target:
             json.dump(content, target)
 
+class DomainCommand:
+    def __init__(self, subcommand, domain):
+        self.domain = domain
+        self.subcommand = subcommand
+
+    def execute(self):
+        path = self.prepare_domain()
+        return self.subcommand.execute(path)
+
+    def prepare_domain(self):
+        path = os.path.join(tempfile.gettempdir(), self.domain)
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            pass
+        return path
+
 def parse_command(command):
     registrations = {
         'list': ListCommand,
-        'save': SaveCommand
+        'save': SaveCommand,
+        'load': LoadCommand
     }
     command_class = registrations[command['op']]
-    return command_class(**command.get('args', {}))
+    domain = command['domain']
+    prepared = command_class(**command.get('args', {}))
+    return DomainCommand(prepared, domain)
 
 def read_command():
     command = get_message()
     return parse_command(command)
 
-def execute(command, directory):
+def execute(command):
     message = {}
     try:
-        reply = command.execute(directory)
         message['result'] = 'success'
+        reply = command.execute()
         if reply is not None:
             message['reply'] = reply
     except Exception as e:
@@ -73,7 +103,7 @@ def send_message(encoded_message):
 
 def main():
     command = read_command()
-    execute(command, '/tmp')
+    execute(command)
 
 if __name__ == '__main__':
     main()
