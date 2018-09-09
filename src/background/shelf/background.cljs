@@ -6,11 +6,13 @@
             [chromex.ext.runtime :as runtime]
             [chromex.ext.storage :as storage]
             [chromex.protocols :as storage-proto]
-            [cljs.core.async :refer [<!]]))
+            [cljs.core.async :refer [<!]]
+            [clojure.string :as str]
+            [clojure.set :as set]))
 
-(def *app-name* "shelf")
-(def *client-id-storage-key* "client-id")
-(def *domain-storage-key* "domain")
+(def ^:static app-name "shelf")
+(def ^:static client-id-storage-key "client-id")
+(def ^:static domain-storage-key "domain")
 
 (defn get-or-generate [key prefix]
   (go
@@ -23,28 +25,32 @@
           new-value)))))
 
 (defn get-domain []
-  (get-or-generate *domain-storage-key* "shelf-domain"))
+  (get-or-generate domain-storage-key "shelf-domain"))
 
 (defn get-client-id []
-  (get-or-generate *client-id-storage-key* "bookmarks"))
+  (get-or-generate client-id-storage-key "bookmarks"))
+
+(defn- file-client-id [filename]
+  (first (str/split filename #"\.")))
 
 (defn read-bookmarks-file [domain file-name]
   (go
     (let [command (clj->js {:op "load" :args {:name file-name} :domain domain})
-          reply (<! (runtime/send-native-message *app-name* command))
+          reply (<! (runtime/send-native-message app-name command))
           content (.-reply (first reply))]
-      (js->clj content))))
+      [(file-client-id file-name)
+       (js->clj content :keywordize-keys true)])))
 
 (defn load-saved-bookmarks []
   (go
     (let [domain (<! (get-domain))
           list-command (clj->js {:op "list" :domain domain})
-          file-list-reply (<! (runtime/send-native-message *app-name* list-command))
+          file-list-reply (<! (runtime/send-native-message app-name list-command))
           file-list (.-names (.-reply (first file-list-reply)))]
       (->>
        (map #(read-bookmarks-file domain %) file-list)
        (cljs.core.async/merge)
-       (cljs.core.async/into ())
+       (cljs.core.async/into (hash-map))
        ; FIXME: do something about this unwrapping
        (<!)))))
 
@@ -89,7 +95,7 @@
                 :bookmarks (into () bookmarks)
                 :log (into () log)}
           message (clj->js {:op "save" :args args :domain domain})]
-      (-> (<! (runtime/send-native-message *app-name* message))
+      (-> (<! (runtime/send-native-message app-name message))
           (first)
           (.-result)
           (= "success")
@@ -99,10 +105,38 @@
   (go
     (print (<! chan))))
 
+(defn- flat-bookmarks [bookmarks]
+  (into (hash-map) (map (fn [b] [(:id b) b]) bookmarks)))
+
+(defn- calculate-own-changeset [disk-state browser-bookmarks-list]
+  (let [saved-bookmarks-tree (:bookmarks disk-state)
+        saved-bookmarks (flat-bookmarks saved-bookmarks-tree)
+        browser-bookmarks (flat-bookmarks browser-bookmarks-list)
+        saved-bookmark-ids (set (keys saved-bookmarks))
+        browser-bookmark-ids (set (keys browser-bookmarks))
+        joint (set/intersection browser-bookmark-ids saved-bookmark-ids)
+        added (set/difference browser-bookmark-ids joint)
+        deleted (set/difference saved-bookmark-ids joint)
+        changed (filter #(not= (get saved-bookmarks %2)
+                               (get browser-bookmarks %2))
+                        joint)]
+    (apply concat
+           (map map
+                [#(hash-map :added %) #(hash-map :deleted %) #(hash-map :changed %)]
+                [added deleted changed]))))
+
+(defn- log-append [existing & logs]
+  (into () (apply concat (cons existing logs))))
+
 (defn refresh []
   (go
-   (let [saved (<! (load-saved-bookmarks))
-         existing (<! (load-browser-bookmarks))]
-     (save-bookmarks existing (build-fresh-log existing)))))
+    (let [saved (<! (load-saved-bookmarks))
+          existing (<! (load-browser-bookmarks))
+          client-id (<! (get-client-id))
+          own-saved (get saved client-id)
+          saved-log (:log own-saved)
+          own-changelog (calculate-own-changeset own-saved existing)]
+      (print own-changelog)
+      (save-bookmarks existing (log-append saved-log own-changelog)))))
     
 (runonce (refresh))
