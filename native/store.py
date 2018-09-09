@@ -27,11 +27,13 @@ class SaveCommand:
     def __init__(self, **args):
         self.bookmarks = args['bookmarks']
         self.log = args['log']
+        self.version = args['version']
         self.name = args['name']
 
     def execute(self, directory):
         filename = '{}.json'.format(self.name)
         content = {
+            'version': self.version,
             'bookmarks': self.bookmarks,
             'log': self.log
         }

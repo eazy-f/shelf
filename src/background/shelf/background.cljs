@@ -88,10 +88,11 @@
 (defn build-fresh-log [bookmarks]
   (map log-added bookmarks))
 
-(defn save-bookmarks [bookmarks log]
+(defn save-bookmarks [version bookmarks log]
   (go
     (let [domain (<! (get-domain))
           args {:name (<! (get-client-id))
+                :version version
                 :bookmarks (into () bookmarks)
                 :log (into () log)}
           message (clj->js {:op "save" :args args :domain domain})]
@@ -128,15 +129,26 @@
 (defn- log-append [existing & logs]
   (into () (apply concat (cons existing logs))))
 
+(defn- calculate-peers-changeset [peers existing]
+  (let [peer-changeset (fn [peer]
+                         ())]
+    (apply concat
+           (map peer-changeset peers))))
+
 (defn refresh []
   (go
     (let [saved (<! (load-saved-bookmarks))
           existing (<! (load-browser-bookmarks))
           client-id (<! (get-client-id))
           own-saved (get saved client-id)
+          peers (dissoc saved client-id)
           saved-log (:log own-saved)
-          own-changelog (calculate-own-changeset own-saved existing)]
-      (print own-changelog)
-      (save-bookmarks existing (log-append saved-log own-changelog)))))
+          own-version (:version own-saved)
+          own-changelog (calculate-own-changeset own-saved existing)
+          peers-changelog (calculate-peers-changeset peers existing)
+          new-version (if (not-empty own-changelog) (inc own-version) own-version)]
+      (->> (map #(assoc % :version new-version) own-changelog)
+           (log-append saved-log)
+           (save-bookmarks new-version existing)))))
     
 (runonce (refresh))
