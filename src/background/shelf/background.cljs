@@ -129,9 +129,13 @@
 (defn- log-append [existing & logs]
   (into () (apply concat (cons existing logs))))
 
-(defn- calculate-peers-changeset [peers existing]
-  (let [peer-changeset (fn [peer]
-                         ())]
+(defn- calculate-peers-changeset [peers log existing]
+  (let [import-entries (filter :import log)
+        imported (into (hash-map) (map (fn [i] [(:import i) (:to i)]) import-entries))
+        peer-changeset (fn [peer]
+                         (let [[id content] peer]
+                           (if-not (get imported id)
+                             (list {:import id}))))]
     (apply concat
            (map peer-changeset peers))))
 
@@ -145,9 +149,10 @@
           saved-log (:log own-saved)
           own-version (:version own-saved)
           own-changelog (calculate-own-changeset own-saved existing)
-          peers-changelog (calculate-peers-changeset peers existing)
+          peers-changelog (calculate-peers-changeset peers saved-log existing)
           new-version (if (not-empty own-changelog) (inc own-version) own-version)]
-      (->> (map #(assoc % :version new-version) own-changelog)
+      (->> (log-append saved-log own-changelog peers-changelog)
+           (map #(assoc % :version new-version))
            (log-append saved-log)
            (save-bookmarks new-version existing)))))
     
