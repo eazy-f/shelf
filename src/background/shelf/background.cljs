@@ -8,7 +8,8 @@
             [chromex.protocols :as storage-proto]
             [cljs.core.async :refer [<!]]
             [clojure.string :as str]
-            [clojure.set :as set]))
+            [clojure.set :as set]
+            [cljs.test :refer-macros [deftest is]]))
 
 (def ^:static app-name "shelf")
 (def ^:static client-id-storage-key "client-id")
@@ -54,15 +55,19 @@
        ; FIXME: do something about this unwrapping
        (<!)))))
 
-(defn fold-bookmark-tree- [tree stack acc]
-  (if-let [head (first tree)]
-    (fold-bookmark-tree- (.-children head) (cons (rest tree) stack) (cons head acc))
-    (if-let [branch (first stack)]
-      (fold-bookmark-tree- branch (rest stack) acc)
-      acc)))
-
-(defn fold-bookmark-tree [tree]
-  (fold-bookmark-tree- tree () ()))
+(defn fold-bookmark-tree
+  ([tree] (fold-bookmark-tree tree [#(.-children %) first rest]))
+  ([tree iterators] (fold-bookmark-tree tree [#(.-children %) first rest] () ()))
+  ([tree [get-children get-first get-rest :as iterators] stack acc]
+   (if-let [head (get-first tree)]
+     (fold-bookmark-tree
+      (get-children head)
+      iterators
+      (cons (get-rest tree) stack)
+      (cons head acc))
+     (if-let [branch (get-first stack)]
+       (fold-bookmark-tree branch iterators (rest stack) acc)
+       acc))))
 
 (defn build-bookmark [browser-bookmark]
   {:id (.-id browser-bookmark)
@@ -106,8 +111,10 @@
   (go
     (print (<! chan))))
 
-(defn- flat-bookmarks [bookmarks]
-  (into (hash-map) (map (fn [b] [(:id b) b]) bookmarks)))
+(defn- flat-bookmarks
+  ([bookmarks] (flat-bookmarks bookmarks :id))
+  ([bookmarks get-id]
+   (into (hash-map) (map #(vector (get-id %) %) bookmarks))))
 
 (defn- calculate-own-changeset [disk-state browser-bookmarks-list]
   (let [saved-bookmarks-tree (:bookmarks disk-state)
@@ -155,5 +162,36 @@
            (map #(assoc % :version new-version))
            (log-append saved-log)
            (save-bookmarks new-version existing)))))
-    
+
+(defn apply-log
+  [log tree]
+  tree)
+
+(defn peer-import
+  [[log tree] peer]
+  [log tree])
+
 (runonce (refresh))
+
+(deftest peer-import-test
+  (let [own-tree {:name "root" :tree ()}
+        peer-one-tree '(:folder 1 "root"
+                                (:bookmarks 2 "link1")
+                                (:bookmarks 3 "link2"))
+        peer-two-tree '(:folder 1 "root"
+                                (:bookmark 2 "link1"))
+        iterators [#(drop 3 %) first rest]
+        peer (fn [name tree]
+               {:name name
+                :tree (fold-bookmark-tree tree iterators)})
+        peer-one-ftree (peer "one" peer-one-tree)
+        peer-two-ftree (peer "two" peer-two-tree)]
+    (is
+     (=
+      (apply
+       apply-log
+       (reduce peer-import [() own-tree] (list peer-one-ftree peer-two-ftree)))
+      (conj
+       (:tree own-tree)
+       `(:tree nil "one" ~peer-one-tree)
+       `(:tree nil "two" ~peer-two-tree))))))
