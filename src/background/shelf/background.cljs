@@ -167,9 +167,23 @@
   [log tree]
   tree)
 
+(defn find-trunk
+  [log name]
+  (let [is-peer-import #(and (:import %) (= (:name %) name))]
+    (first (filter is-peer-import log))))
+
+(defn ensure-trunk-exists
+  [log tree peer-name]
+  (if-not (find-trunk log peer-name)
+    (conj log {:import peer-name :name peer-name})
+    log))
+
 (defn peer-import
-  [[log tree] peer]
-  [log tree])
+  [[log0 tree] peer]
+  (let [name (:name peer)
+        log (ensure-trunk-exists log0 tree name)
+        trunk (find-trunk log name)]
+    [log tree]))
 
 (runonce (refresh))
 
