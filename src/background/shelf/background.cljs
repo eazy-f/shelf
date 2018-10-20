@@ -1,15 +1,15 @@
 (ns shelf.background
   (:require-macros [chromex.support :refer [runonce]]
-                   [cljs.core.async :refer [go]])
+                   [cljs.core.async :refer [go go-loop]])
   (:require [chromex.logging :refer-macros [log info warn error group group-end]]
             [chromex.ext.bookmarks :as bookmarks]
             [chromex.ext.runtime :as runtime]
             [chromex.ext.storage :as storage]
             [chromex.protocols :as storage-proto]
-            [cljs.core.async :refer [<!]]
+            [cljs.core.async :refer [<! >! chan]]
             [clojure.string :as str]
             [clojure.set :as set]
-            [cljs.test :refer-macros [deftest is]]))
+            [cljs.test :refer-macros [deftest is async]]))
 
 (def ^:static app-name "shelf")
 (def ^:static client-id-storage-key "client-id")
@@ -107,9 +107,10 @@
           (= "success")
           (assert "failed to save bookmarks")))))
 
-(defn show [chan]
-  (go
-    (print (<! chan))))
+(defn show [chann]
+  (go-loop [c chann]
+    (print (<! c))
+    (recur c)))
 
 (defn- flat-bookmarks
   ([bookmarks] (flat-bookmarks bookmarks :id))
@@ -163,9 +164,34 @@
            (log-append saved-log)
            (save-bookmarks new-version existing)))))
 
+(def test-tree-iterators [#(drop 3 %) first rest])
+
+(defn apply-change
+  [tree-chan change]
+  (let []
+    (cond
+      (or (:import change) (:add change))
+      (go (>! tree-chan {:insert (:name change) :reply (:id-chan change)}))
+      (:delete change)
+      (go (>! tree-chan {:delete (:id change)})))))
+
+(defn create-tree-builder [init-tree]
+  (let [cmd-chan (chan)]
+    (go-loop [nodes (fold-bookmark-tree init-tree test-tree-iterators)]
+       (let [cmd (<! cmd-chan)]
+        (if-let [client (:get-tree cmd)]
+          (>! client '()))
+        (recur nodes)))
+    cmd-chan))
+
 (defn apply-log
-  [log tree]
-  tree)
+  [log self]
+  (let [tree-chan (create-tree-builder (:tree self))
+        result (chan)]
+    (for [change log] (apply-change tree-chan change))
+    (go
+      (>! tree-chan {:get-tree result})
+      (<! result))))
 
 (defn find-trunk
   [log name]
@@ -194,18 +220,27 @@
                                 (:bookmarks 3 "link2"))
         peer-two-tree '(:folder 1 "root"
                                 (:bookmark 2 "link1"))
-        iterators [#(drop 3 %) first rest]
+        iterators test-tree-iterators
         peer (fn [name tree]
                {:name name
                 :tree (fold-bookmark-tree tree iterators)})
         peer-one-ftree (peer "one" peer-one-tree)
         peer-two-ftree (peer "two" peer-two-tree)]
-    (is
-     (=
-      (apply
-       apply-log
-       (reduce peer-import [() own-tree] (list peer-one-ftree peer-two-ftree)))
-      (conj
-       (:tree own-tree)
-       `(:tree nil "one" ~peer-one-tree)
-       `(:tree nil "two" ~peer-two-tree))))))
+    (async done
+     (go
+       (is
+        (=
+         (<!
+          (apply
+           apply-log
+           (reduce peer-import [() own-tree] (list peer-one-ftree peer-two-ftree))))
+         (conj
+          (:tree own-tree)
+          `(:tree nil "one" ~peer-one-tree)
+          `(:tree nil "two" ~peer-two-tree))))
+       (done)))))
+
+(defmethod cljs.test/report [:cljs.test/default :end-run-tests] [m]
+  (if (cljs.test/successful? m)
+    (println "Success!")
+    (println "FAIL")))
