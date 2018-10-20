@@ -15,6 +15,27 @@
 (def ^:static client-id-storage-key "client-id")
 (def ^:static domain-storage-key "domain")
 
+(defprotocol Bookmark
+  (b-id [this])
+  (b-parent [this])
+  (b-title [this])
+  (b-url [this])
+  (b-type [this]))
+
+(deftype BrowserBookmark [js-bookmark]
+  Bookmark
+   (b-id     [this] (.-id js-bookmark))
+   (b-title  [this] (.-title js-bookmark))
+   (b-url    [this] (.-url js-bookmark))
+   (b-type   [this] (.-type js-bookmark)))
+
+(deftype TestBookmark [tuple]
+  Bookmark
+   (b-id     [this] (nth tuple 1))
+   (b-title  [this] (nth tuple 2))
+   (b-url    [this] nil)
+   (b-type   [this] (if (= (first tuple) :folder) "folder" "bookmark")))
+
 (defn get-or-generate [key prefix]
   (go
     (let [local (storage/get-local)
@@ -55,33 +76,35 @@
        ; FIXME: do something about this unwrapping
        (<!)))))
 
-(defn fold-bookmark-tree
-  ([tree] (fold-bookmark-tree tree [#(.-children %) first rest]))
-  ([tree iterators] (fold-bookmark-tree tree [#(.-children %) first rest] () ()))
-  ([tree [get-children get-first get-rest :as iterators] stack acc]
-   (if-let [head (get-first tree)]
-     (fold-bookmark-tree
-      (get-children head)
-      iterators
-      (cons (get-rest tree) stack)
-      (cons head acc))
-     (if-let [branch (get-first stack)]
-       (fold-bookmark-tree branch iterators (rest stack) acc)
-       acc))))
+(defn build-bookmark [parent-id ^Bookmark bookmark]
+  {:id        (b-id bookmark)
+   :parent-id parent-id
+   :title     (b-title bookmark)
+   :url       (b-url bookmark)
+   :type      (b-type bookmark)})
 
-(defn build-bookmark [browser-bookmark]
-  {:id (.-id browser-bookmark)
-   :parent-id (.-parentId browser-bookmark)
-   :title (.-title browser-bookmark)
-   :url (.-url browser-bookmark)
-   :type (.-type browser-bookmark)})
+(defn fold-bookmark-tree
+  ([tree] (fold-bookmark-tree tree [#(.-children %) #(BrowserBookmark. %)]))
+  ([tree iterators] (fold-bookmark-tree tree iterators () () ()))
+  ([tree [get-children new-bookmark :as iterators] parents stack acc]
+   (if-let [head (first tree)]
+     (let [parent-id (first parents)
+           bookmark (build-bookmark parent-id (new-bookmark head))]
+       (fold-bookmark-tree
+        (get-children head)
+        iterators
+        (cons (:id bookmark) parents)
+        (cons (rest tree) stack)
+        (cons bookmark acc)))
+     (if-let [branch (first stack)]
+       (fold-bookmark-tree branch iterators (rest parents) (rest stack) acc)
+       acc))))
 
 (defn load-browser-bookmarks []
   (go
     (->> (<! (bookmarks/get-tree))
          (first)
-         (fold-bookmark-tree)
-         (map build-bookmark))))
+         (fold-bookmark-tree))))
 
 (defn show-bookmarks []
   (go
@@ -113,9 +136,8 @@
     (recur c)))
 
 (defn- flat-bookmarks
-  ([bookmarks] (flat-bookmarks bookmarks :id))
-  ([bookmarks get-id]
-   (into (hash-map) (map #(vector (get-id %) %) bookmarks))))
+  ([bookmarks]
+   (into (hash-map) (map #(vector (:id %) %) bookmarks))))
 
 (defn- calculate-own-changeset [disk-state browser-bookmarks-list]
   (let [saved-bookmarks-tree (:bookmarks disk-state)
@@ -159,12 +181,13 @@
           own-changelog (calculate-own-changeset own-saved existing)
           peers-changelog (calculate-peers-changeset peers saved-log existing)
           new-version (if (not-empty own-changelog) (inc own-version) own-version)]
-      (->> (log-append saved-log own-changelog peers-changelog)
+      (println peers-changelog)
+      (->> (log-append own-changelog peers-changelog)
            (map #(assoc % :version new-version))
            (log-append saved-log)
            (save-bookmarks new-version existing)))))
 
-(def test-tree-iterators [#(drop 3 %) first rest])
+(def test-tree-iterators [#(drop 3 %) #(TestBookmark. %)])
 
 (defn apply-change
   [tree-chan change]
@@ -175,12 +198,34 @@
       (:delete change)
       (go (>! tree-chan {:delete (:id change)})))))
 
+(defn ids-to-tree
+  [id-col nodes]
+  (into
+   ()
+   (map
+    (fn [[id children]]
+      (concat
+       (list :folder id ((comp nodes :name) id))
+       (ids-to-tree children nodes)))
+    id-col)))
+
+(defn unfold-bookmark-tree
+  [nodes]
+  (let [node-id-path (fn [[id node] acc]
+                       (if-let [parent (:parent-id node)]
+                         (recur (parent nodes) (conj acc parent))
+                         (conj acc id)))]
+    (-> (reduce #(assoc-in %1 (node-id-path %2 []) {}) {} nodes)
+        (ids-to-tree nodes)
+        (first))))
+
 (defn create-tree-builder [init-tree]
   (let [cmd-chan (chan)]
-    (go-loop [nodes (fold-bookmark-tree init-tree test-tree-iterators)]
-       (let [cmd (<! cmd-chan)]
+    (go-loop [nodes (flat-bookmarks
+                     (fold-bookmark-tree (list init-tree) test-tree-iterators))]
+      (let [cmd (<! cmd-chan)]
         (if-let [client (:get-tree cmd)]
-          (>! client '()))
+          (>! client {:wrapper (unfold-bookmark-tree nodes)}))
         (recur nodes)))
     cmd-chan))
 
@@ -214,16 +259,17 @@
 (runonce (refresh))
 
 (deftest peer-import-test
-  (let [own-tree {:name "root" :tree ()}
+  (let [own-tree {:name "root"
+                  :tree '(:folder 1 "root")}
         peer-one-tree '(:folder 1 "root"
-                                (:bookmarks 2 "link1")
-                                (:bookmarks 3 "link2"))
+                                (:bookmark 2 "link1")
+                                (:bookmark 3 "link2"))
         peer-two-tree '(:folder 1 "root"
                                 (:bookmark 2 "link1"))
         iterators test-tree-iterators
         peer (fn [name tree]
                {:name name
-                :tree (fold-bookmark-tree tree iterators)})
+                :tree (fold-bookmark-tree (list tree) iterators)})
         peer-one-ftree (peer "one" peer-one-tree)
         peer-two-ftree (peer "two" peer-two-tree)]
     (async done
