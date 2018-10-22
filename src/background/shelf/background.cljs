@@ -181,7 +181,6 @@
           own-changelog (calculate-own-changeset own-saved existing)
           peers-changelog (calculate-peers-changeset peers saved-log existing)
           new-version (if (not-empty own-changelog) (inc own-version) own-version)]
-      (println peers-changelog)
       (->> (log-append own-changelog peers-changelog)
            (map #(assoc % :version new-version))
            (log-append saved-log)
@@ -191,12 +190,13 @@
 
 (defn apply-change
   [tree-chan change]
-  (let []
-    (cond
-      (or (:import change) (:add change))
-      (go (>! tree-chan {:insert (:name change) :reply (:id-chan change)}))
-      (:delete change)
-      (go (>! tree-chan {:delete (:id change)})))))
+  (cond
+   (or (:import change) (:add change))
+   (go (>! tree-chan {:insert (:name change)
+                      :parent-id 1
+                      :reply (:id-chan change)}))
+   (:delete change)
+   (go (>! tree-chan {:delete (:id change)}))))
 
 (defn ids-to-tree
   [id-col nodes]
@@ -213,7 +213,7 @@
   [nodes]
   (let [node-id-path (fn [[id node] acc]
                        (if-let [parent (:parent-id node)]
-                         (recur (parent nodes) (conj acc parent))
+                         (recur [parent nodes] (conj acc parent))
                          (conj acc id)))]
     (-> (reduce #(assoc-in %1 (node-id-path %2 []) {}) {} nodes)
         (ids-to-tree nodes)
@@ -224,16 +224,23 @@
     (go-loop [nodes (flat-bookmarks
                      (fold-bookmark-tree (list init-tree) test-tree-iterators))]
       (let [cmd (<! cmd-chan)]
-        (if-let [client (:get-tree cmd)]
-          (>! client {:wrapper (unfold-bookmark-tree nodes)}))
-        (recur nodes)))
+        (when-let [client (:get-tree cmd)]
+          (>! client {:wrapper (unfold-bookmark-tree nodes)})
+          (recur nodes))
+        (when-let [name (:insert cmd)]
+          (let [client (:reply cmd)
+                base (select-keys cmd [:parent-id])
+                new-id (inc (reduce max 0 (keys nodes)))
+                new-node (assoc base :id new-id :title name)]
+            (>! client new-id)
+            (recur (assoc nodes new-id new-node))))))
     cmd-chan))
 
 (defn apply-log
   [log self]
   (let [tree-chan (create-tree-builder (:tree self))
         result (chan)]
-    (for [change log] (apply-change tree-chan change))
+    (doall (map (partial apply-change tree-chan) log))
     (go
       (>! tree-chan {:get-tree result})
       (<! result))))
@@ -246,7 +253,7 @@
 (defn ensure-trunk-exists
   [log tree peer-name]
   (if-not (find-trunk log peer-name)
-    (conj log {:import peer-name :name peer-name})
+    (conj log {:import peer-name :name peer-name :id-chan (chan 1)})
     log))
 
 (defn peer-import
