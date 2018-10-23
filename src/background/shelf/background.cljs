@@ -199,22 +199,22 @@
    (go (>! tree-chan {:delete (:id change)}))))
 
 (defn ids-to-tree
-  [id-col nodes]
+  [ids nodes]
   (into
    ()
    (map
     (fn [[id children]]
       (concat
-       (list :folder id ((comp nodes :name) id))
+       (list :folder id ((comp :title nodes) id))
        (ids-to-tree children nodes)))
-    id-col)))
+    ids)))
 
 (defn unfold-bookmark-tree
   [nodes]
-  (let [node-id-path (fn [[id node] acc]
-                       (if-let [parent (:parent-id node)]
-                         (recur [parent nodes] (conj acc parent))
-                         (conj acc id)))]
+  (let [node-id-path (fn self [[id node] acc]
+                       (if-let [parent-id (:parent-id node)]
+                         (self [parent-id (nodes parent-id)] (conj acc id))
+                         (reverse (conj acc id))))]
     (-> (reduce #(assoc-in %1 (node-id-path %2 []) {}) {} nodes)
         (ids-to-tree nodes)
         (first))))
