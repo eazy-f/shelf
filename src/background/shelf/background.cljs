@@ -83,26 +83,32 @@
    :url       (b-url bookmark)
    :type      (b-type bookmark)})
 
+; not tail recursive
+(defn- fold-bookmark-tree-
+  ([tree get-children folder acc] (fold-bookmark-tree- tree get-children folder acc nil))
+  ([tree get-children folder acc parent]
+   (reduce
+    (fn [acc branch] (fold-bookmark-tree- branch get-children folder acc branch))
+    (if tree (folder acc parent tree) acc)
+    (get-children tree))))
+
 (defn fold-bookmark-tree
-  ([tree] (fold-bookmark-tree tree [#(.-children %) #(BrowserBookmark. %)]))
-  ([tree iterators] (fold-bookmark-tree tree iterators () () ()))
-  ([tree [get-children new-bookmark :as iterators] parents stack acc]
-   (if-let [head (first tree)]
-     (let [parent-id (first parents)
-           bookmark (build-bookmark parent-id (new-bookmark head))]
-       (fold-bookmark-tree
-        (get-children head)
-        iterators
-        (cons (:id bookmark) parents)
-        (cons (rest tree) stack)
+  ([tree] (fold-bookmark-tree tree #(.-children %) #(BrowserBookmark. %)))
+  ([tree get-children new-bookmark]
+   (fold-bookmark-tree-
+    tree
+    get-children
+    (fn [acc parent node]
+      (let [bookmark (build-bookmark
+                      (when parent (:id (new-bookmark parent)))
+                      (new-bookmark node))]
         (cons bookmark acc)))
-     (if-let [branch (first stack)]
-       (fold-bookmark-tree branch iterators (rest parents) (rest stack) acc)
-       acc))))
+    ())))
 
 (defn load-browser-bookmarks []
   (go
     (->> (<! (bookmarks/get-tree))
+         (first)
          (first)
          (fold-bookmark-tree))))
 
@@ -222,7 +228,7 @@
 (defn create-tree-builder [init-tree]
   (let [cmd-chan (chan)]
     (go-loop [nodes (flat-bookmarks
-                     (fold-bookmark-tree (list init-tree) test-tree-iterators))]
+                     (apply fold-bookmark-tree init-tree test-tree-iterators))]
       (let [cmd (<! cmd-chan)]
         (when-let [client (:get-tree cmd)]
           (>! client {:wrapper (unfold-bookmark-tree nodes)})
@@ -256,12 +262,26 @@
     (conj log {:import peer-name :name peer-name :id-chan (chan 1)})
     log))
 
+(defn remove-imported-bookmarks
+  "remove all children of a given trunk"
+  [trunk tree]
+  nil)
+
 (defn peer-import
   [[log0 tree] peer]
   (let [name (:name peer)
+        peer-tree (:tree peer)
         log (ensure-trunk-exists log0 tree name)
-        trunk (find-trunk log name)]
-    [log tree]))
+        trunk (find-trunk log name)
+        existing-trunk? :version
+        add-bookmark (fn [log parent node] log)
+        [get-children _] test-tree-iterators]
+    (-> (concat
+         log
+         (if (existing-trunk? trunk)
+           (remove-imported-bookmarks trunk tree))
+         (fold-bookmark-tree- peer-tree get-children add-bookmark ())
+     (vector tree)))))
 
 (runonce (refresh))
 
@@ -276,7 +296,7 @@
         iterators test-tree-iterators
         peer (fn [name tree]
                {:name name
-                :tree (fold-bookmark-tree (list tree) iterators)})
+                :tree (apply fold-bookmark-tree tree iterators)})
         peer-one-ftree (peer "one" peer-one-tree)
         peer-two-ftree (peer "two" peer-two-tree)]
     (async done
