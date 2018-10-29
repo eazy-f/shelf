@@ -6,7 +6,7 @@
             [chromex.ext.runtime :as runtime]
             [chromex.ext.storage :as storage]
             [chromex.protocols :as storage-proto]
-            [cljs.core.async :refer [<! >! chan]]
+            [cljs.core.async :refer [<! >! chan promise-chan pipe to-chan]]
             [clojure.string :as str]
             [clojure.set :as set]
             [cljs.test :refer-macros [deftest is async]]))
@@ -199,7 +199,7 @@
   (cond
    (or (:import change) (:add change))
    (go (>! tree-chan {:insert (:name change)
-                      :parent-id 1
+                      :parent-id (-> :parent-id change <!)
                       :reply (:id-chan change)}))
    (:delete change)
    (go (>! tree-chan {:delete (:id change)}))))
@@ -259,7 +259,13 @@
 (defn ensure-trunk-exists
   [log tree peer-name]
   (if-not (find-trunk log peer-name)
-    (conj log {:import peer-name :name peer-name :id-chan (chan 1)})
+    (let [root-id (-> :tree tree (nth 1))
+          parent-chan (promise-chan)]
+      (pipe (to-chan (list root-id)) parent-chan)
+      (conj log {:import peer-name
+                 :name peer-name
+                 :parent-id parent-chan
+                 :id-chan (promise-chan)}))
     log))
 
 (defn remove-imported-bookmarks
@@ -274,14 +280,21 @@
         log (ensure-trunk-exists log0 tree name)
         trunk (find-trunk log name)
         existing-trunk? :version
-        add-bookmark (fn [log parent node] log)
+        add-bookmark (fn [log parent node]
+                       (print node)
+                       (let [name (nth node 2)
+                             change {:add name
+                                     :name name
+                                     :parent-id (:id-chan parent)
+                                     :id-chan (promise-chan)}]
+                         (conj log change)))
         [get-children _] test-tree-iterators]
     (-> (concat
          log
          (if (existing-trunk? trunk)
            (remove-imported-bookmarks trunk tree))
-         (fold-bookmark-tree- peer-tree get-children add-bookmark ())
-     (vector tree)))))
+         (fold-bookmark-tree- peer-tree get-children add-bookmark () trunk))
+        (vector tree))))
 
 (runonce (refresh))
 
@@ -294,9 +307,7 @@
         peer-two-tree '(:folder 1 "root"
                                 (:bookmark 2 "link1"))
         iterators test-tree-iterators
-        peer (fn [name tree]
-               {:name name
-                :tree (apply fold-bookmark-tree tree iterators)})
+        peer (fn [name tree] {:name name :tree tree})
         peer-one-ftree (peer "one" peer-one-tree)
         peer-two-ftree (peer "two" peer-two-tree)]
     (async done
