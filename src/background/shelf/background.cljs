@@ -88,7 +88,7 @@
   ([tree get-children folder acc] (fold-bookmark-tree- tree get-children folder acc nil))
   ([tree get-children folder acc parent]
    (reduce
-    (fn [acc branch] (fold-bookmark-tree- branch get-children folder acc branch))
+    (fn [acc branch] (fold-bookmark-tree- branch get-children folder acc tree))
     (if tree (folder acc parent tree) acc)
     (get-children tree))))
 
@@ -248,6 +248,7 @@
         result (chan)]
     (doall (map (partial apply-change tree-chan) log))
     (go
+      (<! (cljs.core.async/map identity (keep :id-chan log)))
       (>! tree-chan {:get-tree result})
       (<! result))))
 
@@ -281,20 +282,29 @@
         trunk (find-trunk log name)
         existing-trunk? :version
         add-bookmark (fn [log parent node]
-                       (print node)
-                       (let [name (nth node 2)
-                             change {:add name
-                                     :name name
-                                     :parent-id (:id-chan parent)
+                       (let [node-name (nth node 2)
+                             old-parent-id (nth parent 1)
+                             original-id (nth node 1)
+                             parent-find (if parent
+                                           #(= old-parent-id (:original-id %))
+                                           #(= name (:import %)))
+                             parent-id (->> log
+                                            (drop-while (complement parent-find))
+                                            first
+                                            :id-chan)
+                             change {:add node-name
+                                     :name node-name
+                                     :parent-id parent-id
+                                     :original-id original-id
                                      :id-chan (promise-chan)}]
                          (conj log change)))
         [get-children _] test-tree-iterators]
-    (-> (concat
-         log
-         (if (existing-trunk? trunk)
-           (remove-imported-bookmarks trunk tree))
-         (fold-bookmark-tree- peer-tree get-children add-bookmark () trunk))
-        (vector tree))))
+    (as-> log v
+      (concat v
+              (if (existing-trunk? trunk)
+                (remove-imported-bookmarks trunk tree)))
+      (fold-bookmark-tree- peer-tree get-children add-bookmark v)
+      [v tree])))
 
 (runonce (refresh))
 
