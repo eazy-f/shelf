@@ -83,6 +83,14 @@
    :url       (b-url bookmark)
    :type      (b-type bookmark)})
 
+(defn fold-bookmark-tree-backward
+  [tree get-children tjoin tmap]
+  (tjoin
+   (tmap tree)
+   (map
+    #(fold-bookmark-tree-backward % get-children tjoin tmap)
+    (get-children tree))))
+
 ; not tail recursive
 (defn- fold-bookmark-tree-
   ([tree get-children folder acc] (fold-bookmark-tree- tree get-children folder acc nil))
@@ -199,6 +207,7 @@
   (cond
    (or (:import change) (:add change))
    (go (>! tree-chan {:insert (:name change)
+                      :type (:type change)
                       :parent-id (-> :parent-id change <!)
                       :reply (:id-chan change)}))
    (:delete change)
@@ -210,9 +219,10 @@
    ()
    (map
     (fn [[id children]]
-      (concat
-       (list :folder id ((comp :title nodes) id))
-       (ids-to-tree children nodes)))
+      (let [node (nodes id)]
+        (concat
+         (list (keyword (:type node)) id (:title node))
+         (ids-to-tree children nodes))))
     ids)))
 
 (defn unfold-bookmark-tree
@@ -235,7 +245,7 @@
           (recur nodes))
         (when-let [name (:insert cmd)]
           (let [client (:reply cmd)
-                base (select-keys cmd [:parent-id])
+                base (select-keys cmd [:parent-id :type])
                 new-id (inc (reduce max 0 (keys nodes)))
                 new-node (assoc base :id new-id :title name)]
             (>! client new-id)
@@ -266,6 +276,7 @@
       (conj log {:import peer-name
                  :name peer-name
                  :parent-id parent-chan
+                 :type :folder
                  :id-chan (promise-chan)}))
     log))
 
@@ -282,7 +293,8 @@
         trunk (find-trunk log name)
         existing-trunk? :version
         add-bookmark (fn [log parent node]
-                       (let [node-name (nth node 2)
+                       (let [node-type (nth node 0)
+                             node-name (nth node 2)
                              old-parent-id (nth parent 1)
                              original-id (nth node 1)
                              parent-find (if parent
@@ -296,6 +308,7 @@
                                      :name node-name
                                      :parent-id parent-id
                                      :original-id original-id
+                                     :type node-type
                                      :id-chan (promise-chan)}]
                          (conj log change)))
         [get-children _] test-tree-iterators]
@@ -307,6 +320,16 @@
       [v tree])))
 
 (runonce (refresh))
+
+(defn clear-ids
+  [tree]
+  (fold-bookmark-tree-backward
+   tree
+   (first test-tree-iterators)
+   concat
+   #(->> %
+         (map-indexed (fn [i val] (if (not= i 1) val)))
+         (take 3))))
 
 (deftest peer-import-test
   (let [own-tree {:name "root"
@@ -324,14 +347,17 @@
      (go
        (is
         (=
-         (<!
-          (apply
-           apply-log
-           (reduce peer-import [() own-tree] (list peer-one-ftree peer-two-ftree))))
-         (conj
-          (:tree own-tree)
-          `(:tree nil "one" ~peer-one-tree)
-          `(:tree nil "two" ~peer-two-tree))))
+         (as-> (reduce peer-import [() own-tree] (list peer-one-ftree peer-two-ftree)) v
+           (apply apply-log v)
+           (<! v)
+           (:wrapper v)
+           (clear-ids v))
+         (clear-ids
+          (concat
+           (:tree own-tree)
+           (list
+            `(:folder nil "one" ~peer-one-tree)
+            `(:folder nil "two" ~peer-two-tree))))))
        (done)))))
 
 (defmethod cljs.test/report [:cljs.test/default :end-run-tests] [m]
