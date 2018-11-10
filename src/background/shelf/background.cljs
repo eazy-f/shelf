@@ -358,6 +358,12 @@
            (list
             `(:folder nil "one" ~peer-one-tree)
             `(:folder nil "two" ~peer-two-tree))))))
+       (let [name "one"
+             original {:import name :id 1}]
+         (is
+          (=
+           (ensure-trunk-exists (list original) own-tree name)
+           (list original {:delete (:id original)} {:import name}))))
        (done)))))
 
 (defmethod cljs.test/report [:cljs.test/default :end-run-tests] [m]
