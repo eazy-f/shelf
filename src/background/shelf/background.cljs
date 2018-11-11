@@ -230,7 +230,7 @@
   (let [node-id-path (fn self [[id node] acc]
                        (if-let [parent-id (:parent-id node)]
                          (self [parent-id (nodes parent-id)] (conj acc id))
-                         (reverse (conj acc id))))]
+                         (conj acc id)))]
     (-> (reduce #(assoc-in %1 (node-id-path %2 []) {}) {} nodes)
         (ids-to-tree nodes)
         (first))))
@@ -265,20 +265,33 @@
 (defn find-trunk
   [log name]
   (let [is-peer-import #(and (:import %) (= (:name %) name))]
-    (first (filter is-peer-import log))))
+    (reduce
+     (fn [candidate operation]
+       (if (= (:import operation) name)
+         operation
+         (if (and candidate
+                  (= (:delete operation) (:id candidate)))
+           nil
+           candidate)))
+     nil
+     (reverse log))))
 
 (defn ensure-trunk-exists
   [log tree peer-name]
-  (if-not (find-trunk log peer-name)
-    (let [root-id (-> :tree tree (nth 1))
-          parent-chan (promise-chan)]
-      (pipe (to-chan (list root-id)) parent-chan)
-      (conj log {:import peer-name
-                 :name peer-name
-                 :parent-id parent-chan
-                 :type :folder
-                 :id-chan (promise-chan)}))
-    log))
+  (let [parent-chan (promise-chan)
+        import-entry {:import peer-name
+                      :name peer-name
+                      :parent-id parent-chan
+                      :type :folder
+                      :id-chan (promise-chan)}]
+    (as-> log v
+        (find-trunk v peer-name)
+        (if-let [trunk v]
+          (conj log {:delete (:id trunk)})
+          log)
+        (let [root-id (-> :tree tree (nth 1))]
+          (pipe (to-chan (list root-id)) parent-chan)
+          (conj v import-entry)))))
 
 (defn remove-imported-bookmarks
   "remove all children of a given trunk"
@@ -312,10 +325,11 @@
                                      :id-chan (promise-chan)}]
                          (conj log change)))
         [get-children _] test-tree-iterators]
+    (println "log" log)
     (as-> log v
-      (concat v
-              (if (existing-trunk? trunk)
-                (remove-imported-bookmarks trunk tree)))
+      (concat (if (existing-trunk? trunk)
+                (remove-imported-bookmarks trunk tree))
+              v)
       (fold-bookmark-tree- peer-tree get-children add-bookmark v)
       [v tree])))
 
@@ -359,11 +373,13 @@
             `(:folder nil "one" ~peer-one-tree)
             `(:folder nil "two" ~peer-two-tree))))))
        (let [name "one"
-             original {:import name :id 1}]
+             original {:import name :id 1}
+             includes? #(= (select-keys %1 (keys %2)) %2)]
          (is
-          (=
-           (ensure-trunk-exists (list original) own-tree name)
-           (list original {:delete (:id original)} {:import name}))))
+          (every? true?
+           (map includes?
+                (ensure-trunk-exists (list original) own-tree name)
+                (into () [original {:delete (:id original)} {:import name}])))))
        (done)))))
 
 (defmethod cljs.test/report [:cljs.test/default :end-run-tests] [m]
