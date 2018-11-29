@@ -230,8 +230,10 @@
   (let [node-id-path (fn self [[id node] acc]
                        (if-let [parent-id (:parent-id node)]
                          (self [parent-id (nodes parent-id)] (conj acc id))
-                         (conj acc id)))]
-    (-> (reduce #(assoc-in %1 (node-id-path %2 []) {}) {} nodes)
+                         (reverse (conj acc id))))
+        parents (reduce conj #{} (keep (comp :parent-id second) nodes))
+        leaves (remove (comp parents first) nodes)]
+    (-> (reduce #(assoc-in %1 (node-id-path %2 []) {}) {} (reverse leaves))
         (ids-to-tree nodes)
         (first))))
 
@@ -253,9 +255,10 @@
     cmd-chan))
 
 (defn apply-log
-  [log self]
+  [rlog self]
   (let [tree-chan (create-tree-builder (:tree self))
-        result (chan)]
+        result (chan)
+        log (reverse rlog)]
     (doall (map (partial apply-change tree-chan) log))
     (go
       (<! (cljs.core.async/map identity (keep :id-chan log)))
