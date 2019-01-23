@@ -36,21 +36,40 @@
    (b-url    [this] nil)
    (b-type   [this] (if (= (first tuple) :folder) "folder" "bookmark")))
 
-(defn get-or-generate [key prefix]
-  (go
-    (let [local (storage/get-local)
-          values (<! (storage-proto/get local key))]
-      (if-let [value (aget (first (first values)) key)]
-        value
-        (let [new-value (str prefix "-" (rand-int (* 256 256 256 256)))]
-          (storage-proto/set local (clj->js {key new-value}))
-          new-value)))))
+(defprotocol BookmarkStorage
+  (peer-list [this])
+  (peer-load [this peer-id]))
 
-(defn get-domain []
-  (get-or-generate domain-storage-key "shelf-domain"))
+(defprotocol StatefulStorage
+  (get-state [this]))
 
-(defn get-client-id []
-  (get-or-generate client-id-storage-key "bookmarks"))
+(deftype MemoryStorage [handle]
+  BookmarkStorage
+  (peer-list [this]
+    [])
+  (peer-load [this peer-id]
+    {})
+  StatefulStorage
+  (get-state [this]
+    {}))
+
+(defprotocol BookmarkTree
+  (get-tree [this])
+  #_(comment (add-bookmark [this bookmark])
+  (add-folder [this name])))
+
+(deftype BrowserBookmarks []
+  BookmarkTree
+  (get-tree [this]
+    (bookmarks/get-tree)))
+
+(deftype MemoryBookmarks [chan]
+  BookmarkTree
+  (get-tree [this]
+    []))
+
+(defn in-memory-bookmarks [state]
+  (MemoryBookmarks. (chan)))
 
 (defn- file-client-id [filename]
   (first (str/split filename #"\.")))
@@ -63,18 +82,49 @@
       [(file-client-id file-name)
        (js->clj content :keywordize-keys true)])))
 
-(defn load-saved-bookmarks []
+(deftype LocalFileStorage [domain]
+  BookmarkStorage
+  (peer-list [this]
+    (go
+      (let [list-command (clj->js {:op "list" :domain domain})
+            file-list-reply (<! (runtime/send-native-message app-name list-command))]
+        (.-names (.-reply (first file-list-reply))))))
+  (peer-load [this filename]
+    (read-bookmarks-file domain filename)))
+
+(defn in-memory-storage
+  ([] (in-memory-storage [{}]))
+  ([state] (chan)))
+
+(defn get-or-generate [key prefix]
   (go
-    (let [domain (<! (get-domain))
-          list-command (clj->js {:op "list" :domain domain})
-          file-list-reply (<! (runtime/send-native-message app-name list-command))
-          file-list (.-names (.-reply (first file-list-reply)))]
-      (->>
-       (map #(read-bookmarks-file domain %) file-list)
-       (cljs.core.async/merge)
-       (cljs.core.async/into (hash-map))
-       ; FIXME: do something about this unwrapping
-       (<!)))))
+    (let [local (storage/get-local)
+          values (<! (storage-proto/get local key))]
+      (if-let [value (aget (first (first values)) key)]
+        value
+        (let [new-value (str prefix "-" (rand-int (* 256 256 256 256)))]
+          (storage-proto/set local (clj->js {key new-value}))
+          new-value)))))
+
+(defn get-client-id []
+  (get-or-generate client-id-storage-key "bookmarks"))
+
+(defn get-domain []
+  (get-or-generate domain-storage-key "shelf-domain"))
+
+(defn local-file-storage []
+  (go
+    (let [domain (<! (get-domain))]
+      (LocalFileStorage. domain))))
+
+(defn load-saved-bookmarks [storage]
+  (go
+    (->>
+     (map #(peer-load storage %) (<! (peer-list storage)))
+     (cljs.core.async/merge)
+     (cljs.core.async/into (hash-map))
+     ; FIXME: do something about this unwrapping
+     (<!))))
 
 (defn build-bookmark [parent-id ^Bookmark bookmark]
   {:id        (b-id bookmark)
@@ -113,16 +163,16 @@
         (cons bookmark acc)))
     ())))
 
-(defn load-browser-bookmarks []
+(defn load-browser-bookmarks [browser-runtime]
   (go
-    (->> (<! (bookmarks/get-tree))
+    (->> (<! (get-tree browser-runtime))
          (first)
          (first)
          (fold-bookmark-tree))))
 
 (defn show-bookmarks []
   (go
-    (doseq [b (<! (load-browser-bookmarks))] (print b))))
+    (doseq [b (<! (load-browser-bookmarks (BrowserBookmarks.)))] (print b))))
 
 (defn log-added [bookmark]
   {:added (:id bookmark)})
@@ -183,11 +233,10 @@
     (apply concat
            (map peer-changeset peers))))
 
-(defn refresh []
+(defn refresh-within [client-id storage browser-runtime]
   (go
-    (let [saved (<! (load-saved-bookmarks))
-          existing (<! (load-browser-bookmarks))
-          client-id (<! (get-client-id))
+    (let [saved (<! (load-saved-bookmarks storage))
+          existing (<! (load-browser-bookmarks browser-runtime))
           own-saved (get saved client-id)
           peers (dissoc saved client-id)
           saved-log (:log own-saved)
@@ -199,6 +248,14 @@
            (map #(assoc % :version new-version))
            (log-append saved-log)
            (save-bookmarks new-version existing)))))
+
+(defn refresh []
+  "Sync browser bookmarks with peers and own storage"
+  (go
+    (let [local-storage (<! (local-file-storage))
+          runtime (BrowserBookmarks.)
+          client-id (<! (get-client-id))]
+      (refresh-within client-id local-storage runtime))))
 
 (def test-tree-iterators [#(drop 3 %) #(TestBookmark. %)])
 
@@ -302,6 +359,7 @@
   nil)
 
 (defn peer-import
+  "import peer bookmarks to the main tree and update the log accordingly"
   [[log0 tree] peer]
   (let [name (:name peer)
         peer-tree (:tree peer)
@@ -384,6 +442,22 @@
                 (ensure-trunk-exists (list original) own-tree name)
                 (into () [original {:delete (:id original)} {:import name}])))))
        (done)))))
+
+(deftest import-idempotent-test
+  (async
+   done
+   (go
+     (let [bookmarks-state {}
+           bookmark-tree (in-memory-bookmarks bookmarks-state)
+           storage-state bookmarks-state
+           storage (in-memory-storage storage-state)]
+       (is
+        (=
+         storage-state
+         (let [client-id 0]
+           (refresh-within client-id storage bookmark-tree)
+           (get-state storage)))))
+     (done))))
 
 (defmethod cljs.test/report [:cljs.test/default :end-run-tests] [m]
   (if (cljs.test/successful? m)

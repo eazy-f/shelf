@@ -1,5 +1,5 @@
 (defproject eazy-f/shelf "0.0.1"
-  :dependencies [[org.clojure/clojure "1.9.0"]
+  :dependencies [[org.clojure/clojure "1.10.0"]
                  [org.clojure/clojurescript "1.10.238"]
                  [org.clojure/core.async "0.4.474"]
                  [binaryage/chromex "0.6.0"]
