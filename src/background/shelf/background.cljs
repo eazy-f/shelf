@@ -5,11 +5,12 @@
             [chromex.ext.bookmarks :as bookmarks]
             [chromex.ext.runtime :as runtime]
             [chromex.ext.storage :as storage]
-            [chromex.protocols :as storage-proto]
+            [chromex.protocols.chrome-storage-area :as storage-proto]
             [cljs.core.async :refer [<! >! chan promise-chan pipe to-chan]]
             [clojure.string :as str]
             [clojure.set :as set]
-            [cljs.test :refer-macros [deftest is async]]))
+            [cljs.test :refer-macros [deftest is async]]
+            [shelf.background.status :as status]))
 
 (def ^:static app-name "shelf")
 (def ^:static client-id-storage-key "client-id")
@@ -394,7 +395,9 @@
       (fold-bookmark-tree- peer-tree get-children add-bookmark v)
       [v tree])))
 
-(runonce (refresh))
+(runonce
+ (status/listen)
+ (refresh))
 
 (defn clear-ids
   [tree]
