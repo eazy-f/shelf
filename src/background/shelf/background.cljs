@@ -10,7 +10,8 @@
             [clojure.string :as str]
             [clojure.set :as set]
             [cljs.test :refer-macros [deftest is async]]
-            [shelf.background.status :as status]))
+            [shelf.background.status :as status]
+            [shelf.background.config :as config]))
 
 (def ^:static app-name "shelf")
 (def ^:static client-id-storage-key "client-id")
@@ -396,7 +397,7 @@
       [v tree])))
 
 (runonce
- (status/listen)
+ (status/listen (config/load))
  (refresh))
 
 (defn clear-ids
