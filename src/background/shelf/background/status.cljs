@@ -24,8 +24,8 @@
         (let [port (first params)]
           (when (= "status" (get-name port))
             (let [state-chan (chan)]
-              (tap state-mult state-chan)
               (on-disconnect! port (fn []
                                      (close! state-chan)))
+              (tap state-mult state-chan)
               (serve-client port state-chan command-chan))))
         (recur)))))

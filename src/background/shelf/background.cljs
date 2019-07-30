@@ -397,7 +397,7 @@
       [v tree])))
 
 (runonce
- (status/listen (config/load))
+ (status/listen (config/load (storage/get-local)))
  (refresh))
 
 (defn clear-ids

@@ -25,19 +25,17 @@
         (recur)))
     (.appendChild parent element)))
 
+(defn- make-button
+  ([name] (make-button name "button"))
+  ([name type] (gdom/createDom "button" #js{:type type} name)))
+
 (defn- activate-buttons [port]
-  (let [make-button #(gdom/createDom "button" #js{:type "button"} %1)
-        configure (make-button "Configure")
-        clear (make-button "Clear")
+  (let [configure (make-button "Configure")
         form (gdom/createDom "form" nil configure)]
     (.addEventListener
      configure
      "click"
      (fn [event] (port-send port ["configure"])))
-    (.addEventListener
-     clear
-     "click"
-     (fn [event] (port-send port ["clear"])))
     form))
 
 (defn- get-form-values [event]
@@ -49,15 +47,21 @@
      [(keyword (.-name e)) (.-value e)])))
 
 (defn- build-pin-code-form [port]
-  (let [button (gdom/createDom "button" #js{:type "submit"} "Enter")
-        input (gdom/createDom "input" #js{:name "pin" :type "text" :placeholder "PIN"})
-        form (gdom/createDom "form" nil input button)]
-    (.addEventListener form
-                       "submit"
-                       (fn [event]
-                         (let [{:keys [pin]} (get-form-values event)]
-                           (port-send port ["activate" pin])
-                           (.preventDefault event))))
+  (let [submit (make-button "Enter" "submit")
+        input (gdom/createDom "input" #js{:name "pin" :type "text" :placeholder "PIN" :style "width:60pt;"})
+        clear (make-button "Clear")
+        form (gdom/createDom "form" #js{:style "box-sizing:border-box;"} input submit clear)]
+    (.addEventListener
+     clear
+     "click"
+     (fn [event] (port-send port ["clear"])))
+    (.addEventListener
+     form
+     "submit"
+     (fn [event]
+       (let [{:keys [pin]} (get-form-values event)]
+         (port-send port ["activate" pin])
+         (.preventDefault event))))
     form))
 
 (defn- show-active [state port]
