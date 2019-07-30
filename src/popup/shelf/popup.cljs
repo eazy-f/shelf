@@ -64,13 +64,21 @@
          (.preventDefault event))))
     form))
 
-(defn- show-active [state port]
-  (let [logout (gdom/createDom "button" #js{:type "button"} "Logout")
-        text (gdom/createDom "h6" nil (.-pin state))]
+(defn- logout-button [port]
+  (let [button (gdom/createDom "button" #js{:type "button"} "Logout")]
     (.addEventListener
-     logout
+     button
      "click"
      (fn [event] (port-send port ["logout"])))
+    button))
+
+(defn- show-active [port]
+  (let [logout (logout-button port)]
+    (gdom/createDom "form" nil logout)))
+
+(defn- show-welcome [state port]
+  (let [logout (logout-button port)
+        text (gdom/createDom "h6" nil (.-pin state))]
     (gdom/createDom "form" nil text logout)))
 
 ;; < empty
@@ -94,7 +102,8 @@
             (set-content (case state-type
                            "empty" active-buttons
                            "configured" pin-code-form
-                           "active" (show-active state port)
+                           "active" (show-active port)
+                           "first-run" (show-welcome state port)
                            starting-elements)))
         (recur state-type))))))
 
