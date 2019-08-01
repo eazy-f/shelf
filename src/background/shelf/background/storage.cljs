@@ -2,7 +2,10 @@
   (:require [cljs.core.async :refer [<! >! close! chan promise-chan pipe to-chan go]]
             [clojure.string :as str]
             [chromex.ext.runtime :as runtime]
-            firebase))
+            firebase
+            [shelf.background.crypto :refer [encrypt decrypt
+                                             buffer-to-hex hex-to-buffer
+                                             buffer-to-text text-to-buffer]]))
 
 (def ^:static app-name "shelf")
 
@@ -35,12 +38,15 @@
       [(file-client-id filename)
        (js->clj content :keywordize-keys true)])))
 
+(defn peer-snapshot-object [client-id version bookmarks log]
+  {:name client-id
+   :version version
+   :bookmarks (into () bookmarks)
+   :log (into () log)})
+
 (defn save-bookmarks [domain client-id version bookmarks log]
   (go
-    (let [args {:name client-id
-                :version version
-                :bookmarks (into () bookmarks)
-                :log (into () log)}
+    (let [args (peer-snapshot-object client-id version bookmarks log)
           message (clj->js {:op "save" :args args :domain domain})]
       (-> (<! (runtime/send-native-message app-name message))
           (first)
@@ -63,7 +69,7 @@
 (defn- firebase-folder-name [domain]
   (str "shelf-" domain))
 
-(deftype FirebaseBookmarkStorage [domain app]
+(deftype FirebaseBookmarkStorage [domain app stg-key]
   BookmarkStorage
   (peer-list [this]
     (let [result (promise-chan)
@@ -75,38 +81,66 @@
        #(close! promise-chan))
       result))
   (peer-load [this filename]
-    (let [result (promise-chan)
+    (let [result (chan 1)
+          iv-promise (promise-chan)
           storage (.storage app)
           folder (.ref storage (firebase-folder-name domain))
           file (.child folder filename)]
       (.then
+       (.getMetadata file)
+       #(go
+          (->> %1
+              (.-customMetadata)
+              (.-iv)
+              (hex-to-buffer)
+              (>! iv-promise)))
+       #(close! iv-promise))
+      (.then
        (.getDownloadURL file)
        #(.then
-         (js/fetch %1)
-         (comp (fn [res] (go (>! result res))) js->clj js/JSON.parse)
+         (js/fetch %1 #js{:mode "no-cors"})
+         (fn [response]
+           (.then
+            (.arrayBuffer response)
+            (fn [ciphertext]
+              (go
+                (as-> (<! iv-promise) v
+                  (decrypt (hex-to-buffer stg-key) v ciphertext)
+                  (<! v)
+                  (buffer-to-text v)
+                  (.parse js/JSON v)
+                  (js->clj v :keywordize-keys true)
+                  (>! result [filename v]))
+                (close! result)))
+            (fn [_e] (close! result))))
          (fn [_e] (close! result)))
-       #(close! promise-chan))
+       #(close! result))
       result))
   (peer-save [this filename version bookmarks log]
     (let [result (promise-chan)
           storage (.storage app)
           folder (.ref storage (firebase-folder-name domain))
           file (.child folder filename)
-          content "{}"]
-      (.then
-       (.putString file content)
-       #(go (>! result true))
-       #(close! promise-chan))
+          snapshot (peer-snapshot-object filename version bookmarks log)
+          snapshot-plain (text-to-buffer (.stringify js/JSON (clj->js snapshot)))
+          metadata (fn [iv] #js{:customMetadata #js{:iv (buffer-to-hex iv)}})]
+      (go
+        (if-some [[iv content] (<! (encrypt (hex-to-buffer stg-key) snapshot-plain))]
+          (.then
+           (.put file content (metadata iv))
+           #(go (>! result true))
+           #(close! promise-chan))
+          (close! result)))
       result)))
 
 (defn get-configured-storage [domain config]
   "channel with BookmarkStorage object for Firebase"
-  (println "configuring for:" domain config)
   (let [result (promise-chan)
         apikey (config "apikey")
         bucket (config "bucket")
         username (config "username")
         password (config "password")
+        stg-key  (config "stg-key")
         app (try
               (firebase/initializeApp #js{:apiKey apikey
                                           :storageBucket bucket}
@@ -114,6 +148,6 @@
               (catch js/Object e (println e) (firebase/app app-name)))]
     (.then
      (.signInWithEmailAndPassword (.auth app) username password)
-     #(go (>! result (FirebaseBookmarkStorage. domain app)))
+     #(go (>! result (FirebaseBookmarkStorage. domain app stg-key)))
      #(close! result))
     result))

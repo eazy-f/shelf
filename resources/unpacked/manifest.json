@@ -17,6 +17,7 @@
   },
   "permissions": [
     "*://localhost/*",
+    "https://firebasestorage.googleapis.com/*",
     "storage",
     "bookmarks",
     "nativeMessaging"

@@ -2,7 +2,10 @@
   (:require-macros [cljs.core.async :refer [go-loop go]])
   (:require [cljs.core.async :refer [chan >! <! mult promise-chan close!]]
             [clojure.string]
-            [chromex.protocols.chrome-storage-area :as browser-storage]))
+            [chromex.protocols.chrome-storage-area :as browser-storage]
+            [shelf.background.crypto :refer [buffer-to-hex hex-to-buffer
+                                             buffer-to-text text-to-buffer
+                                             random-byte-array key-to-hex]]))
 
 (def EMPTYSTATE {:type "empty"})
 (def DEFAULTCONFIG
@@ -11,34 +14,6 @@
 
 (defn- cbc-cipher [iv]
   #js{:name "AES-CBC" :iv iv})
-
-(defn- text-to-buffer [text]
-  (.encode (js/TextEncoder.) text))
-
-(defn- buffer-to-text [buffer]
-  (.decode (js/TextDecoder.) buffer))
-
-(defn- hex-to-buffer [string]
-  (let [buffer-length (quot (count string) 2)
-        pairs (partition 2 string)
-        array (js/Uint8Array. buffer-length)]
-    (dorun
-     (map-indexed
-      (fn [i [h l]]
-        (aset array i (js/parseInt (str h l) 16)))
-      pairs))
-    array))
-
-(defn- buffer-to-hex [buffer]
-  (apply
-   str
-   (for [oct (array-seq buffer)] (.padStart (.toString oct 16) 2 "0"))))
-
-(defn- key-to-hex [key]
-  (let [decoded (promise-chan)]
-  (go
-    (.then (.exportKey js/crypto.subtle "raw" key) #(go (>! decoded %1)))
-    (buffer-to-hex (js/Uint8Array. (<! decoded))))))
 
 (defn- get-encryption-key [pin salt]
   (let [encoded-pin (text-to-buffer pin)
@@ -114,21 +89,21 @@
 (defn- clear-storage [storage]
   (go (<! (browser-storage/remove storage "config"))))
 
-(defn- generate-encryption-key []
-  "Donhirch0Ow2")
+(defn- generate-encryption-key [bytes]
+  (buffer-to-hex (random-byte-array bytes)))
 
 (defn- generate-salt []
-  (.getRandomValues js/crypto (js/Uint8Array. 16)))
+  (random-byte-array 16))
 
 (defn- configure-storage [storage configuration]
   (go
-    (let [stg-encryption-key (generate-encryption-key)
+    (let [stg-encryption-key (generate-encryption-key 32)
           configuration-map (js->clj configuration)
           pin (configuration-map "pin")
           stored-config (into (dissoc configuration-map "pin")
                               {"stg-key" stg-encryption-key})
           salt (generate-salt)
-          iv (.getRandomValues js/crypto (js/Uint8Array. 16))
+          iv (random-byte-array 16)
           encrypted-config (<! (encrypt stored-config pin salt iv))
           stored-objects {:config encrypted-config
                           :config_salt (buffer-to-hex salt)
