@@ -114,21 +114,19 @@
 (defn- clear-storage [storage]
   (go (<! (browser-storage/remove storage "config"))))
 
-(defn- generate-pin []
-  "1112")
-
 (defn- generate-encryption-key []
   "Donhirch0Ow2")
 
 (defn- generate-salt []
   (.getRandomValues js/crypto (js/Uint8Array. 16)))
 
-(defn- configure-storage [storage]
+(defn- configure-storage [storage configuration]
   (go
     (let [stg-encryption-key (generate-encryption-key)
-          pin (generate-pin)
-          stored-config (into DEFAULTCONFIG
-                              {:stg-key stg-encryption-key})
+          configuration-map (js->clj configuration)
+          pin (configuration-map "pin")
+          stored-config (into (dissoc configuration-map "pin")
+                              {"stg-key" stg-encryption-key})
           salt (generate-salt)
           iv (.getRandomValues js/crypto (js/Uint8Array. 16))
           encrypted-config (<! (encrypt stored-config pin salt iv))
@@ -137,7 +135,7 @@
                           :config_iv (buffer-to-hex iv)}]
       ;;FIXME: double check this read
       (when (<! (browser-storage/set storage (clj->js stored-objects)))
-        (into stored-config {:type "first-run" :pin pin})))))
+        (into stored-config {:type "active"})))))
 
 (defn- try-activate [state storage pin]
   (go
@@ -157,12 +155,11 @@
     (let [[cmd-name & args] cmd
           fresh-start (fn [] (go (<! (clear-storage storage)) (<! (load-stored-state storage))))]
       (case [(:type state) cmd-name]
-        ["empty" "configure"] (<! (configure-storage storage))
+        ["empty" "configure"] (<! (apply configure-storage storage args))
         ["configured" "activate"] (<! (apply try-activate state storage args))
         ["configured" "clear"] (<! (fresh-start))
         ["active" "clear"] (<! (fresh-start))
         ["active" "logout"] (logout state)
-        ["first-run" "logout"] (logout state)
         state))))
 
 (defn- listen [channels storage]

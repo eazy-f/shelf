@@ -40,6 +40,8 @@
                                                   {:websocket-url "ws://localhost:6888/figwheel-ws"
                                                    :websocket-host "localhost"
                                                    :websocket-port 6888}}
+                                :foreign-libs [{:file "https://www.gstatic.com/firebasejs/6.3.3/firebase.js"
+                                                :provides ["firebase"]}]
                                 :source-map    true}}
                 :popup
                 {:source-paths ["src/popup"]

@@ -17,6 +17,14 @@
 (defn- get-first-by-tag [parent tag]
   (.item (.getElementsByTagName parent tag) 0))
 
+(defn- get-form-values [event]
+  (into
+   {}
+   (for
+       [e (array-seq (.-elements (.-target event)))
+        :while (or (= "text" (.-type e)) (= "password" (.-type e)))]
+     [(keyword (.-name e)) (.-value e)])))
+
 (defn- set-content [element]
   (let [parent (get-popup-area)]
     (loop []
@@ -29,22 +37,34 @@
   ([name] (make-button name "button"))
   ([name type] (gdom/createDom "button" #js{:type type} name)))
 
-(defn- activate-buttons [port]
-  (let [configure (make-button "Configure")
-        form (gdom/createDom "form" nil configure)]
-    (.addEventListener
-     configure
-     "click"
-     (fn [event] (port-send port ["configure"])))
-    form))
+(defn- make-input [type name placeholder]
+  (gdom/createDom "input" #js{:type type
+                              :name name
+                              :placeholder placeholder}))
 
-(defn- get-form-values [event]
-  (into
-   {}
-   (for
-       [e (array-seq (.-elements (.-target event)))
-        :while (= "text" (.-type e))]
-     [(keyword (.-name e)) (.-value e)])))
+(defn- activate-buttons [port]
+
+  (let [passphrase (make-input "password" "pin" "Passphrase")
+        api-key    (make-input "apikey" "text" "API KEY")
+        bucket     (make-input "bucket" "text" "Storage bucket name")
+        username   (make-input "username" "text" "User name")
+        password   (make-input "password" "password" "User password")
+        configure  (make-button "Configure" "submit")
+        form (gdom/createDom "form" #js{:class "config"}
+                             passphrase
+                             (gdom/createDom "h3" nil "Firebase settings:")
+                             api-key
+                             bucket
+                             username
+                             password
+                             configure)]
+    (.addEventListener
+     form
+     "submit"
+     (fn [event]
+       (port-send port ["configure" (get-form-values event)])
+       (.preventDefault event)))
+    form))
 
 (defn- build-pin-code-form [port]
   (let [submit (make-button "Enter" "submit")
