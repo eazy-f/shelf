@@ -43,7 +43,6 @@
                               :placeholder placeholder}))
 
 (defn- activate-buttons [port]
-
   (let [passphrase (make-input "password" "pin" "Passphrase")
         api-key    (make-input "apikey" "text" "API KEY")
         bucket     (make-input "bucket" "text" "Storage bucket name")
@@ -68,7 +67,7 @@
 
 (defn- build-pin-code-form [port]
   (let [submit (make-button "Enter" "submit")
-        input (gdom/createDom "input" #js{:name "pin" :type "text" :placeholder "PIN" :style "width:60pt;"})
+        input (gdom/createDom "input" #js{:name "pin" :type "password" :placeholder "PIN" :style "width:60pt;"})
         clear (make-button "Clear")
         form (gdom/createDom "form" #js{:style "box-sizing:border-box;"} input submit clear)]
     (.addEventListener

@@ -4,16 +4,20 @@
   (:require [chromex.logging :refer-macros [log info warn error group group-end]]
             [chromex.ext.bookmarks :as bookmarks]
             [chromex.ext.runtime :as runtime]
-            [chromex.ext.storage :as storage]
+            [chromex.ext.storage :as browser-storage]
             [chromex.protocols.chrome-storage-area :as storage-proto]
             [cljs.core.async :refer [<! >! chan promise-chan pipe to-chan]]
-            [clojure.string :as str]
             [clojure.set :as set]
             [cljs.test :refer-macros [deftest is async]]
+            [shelf.background.storage :refer [peer-list
+                                              peer-load
+                                              peer-save
+                                              get-state
+                                              LocalFileStorage
+                                              FirebaseBookmarkStorage]]
             [shelf.background.status :as status]
             [shelf.background.config :as config]))
 
-(def ^:static app-name "shelf")
 (def ^:static client-id-storage-key "client-id")
 (def ^:static domain-storage-key "domain")
 
@@ -38,23 +42,6 @@
    (b-url    [this] nil)
    (b-type   [this] (if (= (first tuple) :folder) "folder" "bookmark")))
 
-(defprotocol BookmarkStorage
-  (peer-list [this])
-  (peer-load [this peer-id]))
-
-(defprotocol StatefulStorage
-  (get-state [this]))
-
-(deftype MemoryStorage [handle]
-  BookmarkStorage
-  (peer-list [this]
-    [])
-  (peer-load [this peer-id]
-    {})
-  StatefulStorage
-  (get-state [this]
-    {}))
-
 (defprotocol BookmarkTree
   (get-tree [this])
   #_(comment (add-bookmark [this bookmark])
@@ -73,34 +60,13 @@
 (defn in-memory-bookmarks [state]
   (MemoryBookmarks. (chan)))
 
-(defn- file-client-id [filename]
-  (first (str/split filename #"\.")))
-
-(defn read-bookmarks-file [domain file-name]
-  (go
-    (let [command (clj->js {:op "load" :args {:name file-name} :domain domain})
-          reply (<! (runtime/send-native-message app-name command))
-          content (.-reply (first reply))]
-      [(file-client-id file-name)
-       (js->clj content :keywordize-keys true)])))
-
-(deftype LocalFileStorage [domain]
-  BookmarkStorage
-  (peer-list [this]
-    (go
-      (let [list-command (clj->js {:op "list" :domain domain})
-            file-list-reply (<! (runtime/send-native-message app-name list-command))]
-        (.-names (.-reply (first file-list-reply))))))
-  (peer-load [this filename]
-    (read-bookmarks-file domain filename)))
-
 (defn in-memory-storage
   ([] (in-memory-storage [{}]))
   ([state] (chan)))
 
 (defn get-or-generate [key prefix]
   (go
-    (let [local (storage/get-local)
+    (let [local (browser-storage/get-local)
           values (<! (storage-proto/get local key))]
       (if-let [value (aget (first (first values)) key)]
         value
@@ -182,20 +148,6 @@
 (defn build-fresh-log [bookmarks]
   (map log-added bookmarks))
 
-(defn save-bookmarks [version bookmarks log]
-  (go
-    (let [domain (<! (get-domain))
-          args {:name (<! (get-client-id))
-                :version version
-                :bookmarks (into () bookmarks)
-                :log (into () log)}
-          message (clj->js {:op "save" :args args :domain domain})]
-      (-> (<! (runtime/send-native-message app-name message))
-          (first)
-          (.-result)
-          (= "success")
-          (assert "failed to save bookmarks")))))
-
 (defn show [chann]
   (go-loop [c chann]
     (print (<! c))
@@ -249,7 +201,7 @@
       (->> (log-append own-changelog peers-changelog)
            (map #(assoc % :version new-version))
            (log-append saved-log)
-           (save-bookmarks new-version existing)))))
+           (peer-save storage client-id new-version existing)))))
 
 (defn refresh []
   "Sync browser bookmarks with peers and own storage"
@@ -397,7 +349,7 @@
       [v tree])))
 
 (runonce
- (status/listen (config/load (storage/get-local)))
+ (status/listen (config/load (browser-storage/get-local)))
  (refresh))
 
 (defn clear-ids
