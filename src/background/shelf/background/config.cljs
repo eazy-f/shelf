@@ -144,7 +144,7 @@
           salt (hex-to-buffer (.-config_salt stored))
           iv (hex-to-buffer (.-config_iv stored))]
       (if-let [decrypted (<! (decrypt (hex-to-buffer config) pin salt iv))]
-        {:type "active"}
+        (into decrypted {:type "active"})
         state))))
 
 (defn- logout [state]

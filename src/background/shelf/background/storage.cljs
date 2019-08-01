@@ -60,17 +60,60 @@
   (peer-save [this filename version bookmarks log]
     (save-bookmarks domain filename version bookmarks log)))
 
+(defn- firebase-folder-name [domain]
+  (str "shelf-" domain))
+
 (deftype FirebaseBookmarkStorage [domain app]
   BookmarkStorage
   (peer-list [this]
     (let [result (promise-chan)
           storage (.storage app)
-          folder (.ref storage "shelf-bookmarks")]
+          folder (.ref storage (firebase-folder-name domain))]
       (.then
        (.list folder)
-       #(go (->> %1 (.-items) (map (fn [ref] (.-name ref))) (>! promise-chan)))
-       #(close! promise-chan))))
+       #(go (->> %1 (.-items) (map (fn [ref] (.-name ref))) (>! result)))
+       #(close! promise-chan))
+      result))
   (peer-load [this filename]
-    nil)
+    (let [result (promise-chan)
+          storage (.storage app)
+          folder (.ref storage (firebase-folder-name domain))
+          file (.child folder filename)]
+      (.then
+       (.getDownloadURL file)
+       #(.then
+         (js/fetch %1)
+         (comp (fn [res] (go (>! result res))) js->clj js/JSON.parse)
+         (fn [_e] (close! result)))
+       #(close! promise-chan))
+      result))
   (peer-save [this filename version bookmarks log]
-    nil))
+    (let [result (promise-chan)
+          storage (.storage app)
+          folder (.ref storage (firebase-folder-name domain))
+          file (.child folder filename)
+          content "{}"]
+      (.then
+       (.putString file content)
+       #(go (>! result true))
+       #(close! promise-chan))
+      result)))
+
+(defn get-configured-storage [domain config]
+  "channel with BookmarkStorage object for Firebase"
+  (println "configuring for:" domain config)
+  (let [result (promise-chan)
+        apikey (config "apikey")
+        bucket (config "bucket")
+        username (config "username")
+        password (config "password")
+        app (try
+              (firebase/initializeApp #js{:apiKey apikey
+                                          :storageBucket bucket}
+                                      app-name)
+              (catch js/Object e (println e) (firebase/app app-name)))]
+    (.then
+     (.signInWithEmailAndPassword (.auth app) username password)
+     #(go (>! result (FirebaseBookmarkStorage. domain app)))
+     #(close! result))
+    result))

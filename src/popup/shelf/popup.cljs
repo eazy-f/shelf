@@ -44,9 +44,9 @@
 
 (defn- activate-buttons [port]
   (let [passphrase (make-input "password" "pin" "Passphrase")
-        api-key    (make-input "apikey" "text" "API KEY")
-        bucket     (make-input "bucket" "text" "Storage bucket name")
-        username   (make-input "username" "text" "User name")
+        api-key    (make-input "text" "apikey" "API KEY")
+        bucket     (make-input "text" "bucket" "Storage bucket name")
+        username   (make-input "text" "username" "User name")
         password   (make-input "password" "password" "User password")
         configure  (make-button "Configure" "submit")
         form (gdom/createDom "form" #js{:class "config"}

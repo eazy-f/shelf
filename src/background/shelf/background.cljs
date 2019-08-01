@@ -6,13 +6,14 @@
             [chromex.ext.runtime :as runtime]
             [chromex.ext.storage :as browser-storage]
             [chromex.protocols.chrome-storage-area :as storage-proto]
-            [cljs.core.async :refer [<! >! chan promise-chan pipe to-chan]]
+            [cljs.core.async :refer [<! >! close! chan promise-chan pipe to-chan tap untap]]
             [clojure.set :as set]
             [cljs.test :refer-macros [deftest is async]]
             [shelf.background.storage :refer [peer-list
                                               peer-load
                                               peer-save
                                               get-state
+                                              get-configured-storage
                                               LocalFileStorage
                                               FirebaseBookmarkStorage]]
             [shelf.background.status :as status]
@@ -203,13 +204,14 @@
            (log-append saved-log)
            (peer-save storage client-id new-version existing)))))
 
-(defn refresh []
+(defn refresh [config]
   "Sync browser bookmarks with peers and own storage"
   (go
-    (let [local-storage (<! (local-file-storage))
+    (let [domain (<! (get-domain))
           runtime (BrowserBookmarks.)
-          client-id (<! (get-client-id))]
-      (refresh-within client-id local-storage runtime))))
+          client-id (<! (get-client-id))
+          storage (<! (get-configured-storage domain config))]
+      (refresh-within client-id storage runtime))))
 
 (def test-tree-iterators [#(drop 3 %) #(TestBookmark. %)])
 
@@ -349,8 +351,18 @@
       [v tree])))
 
 (runonce
- (status/listen (config/load (browser-storage/get-local)))
- (refresh))
+ (let [browser-storage (browser-storage/get-local)
+       config-srv (config/load browser-storage)
+       state-updates (chan)]
+   (tap (:state config-srv) state-updates)
+   (status/listen config-srv)
+   (go-loop []
+     (when-some [{state-type :type :as state} (<! state-updates)]
+       (when (= "active" state-type)
+         (refresh state))
+       (recur))
+     (untap (:state config-srv) state-updates)
+     (close! state-updates))))
 
 (defn clear-ids
   [tree]
