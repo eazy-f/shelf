@@ -78,7 +78,7 @@
       (.then
        (.list folder)
        #(go (->> %1 (.-items) (map (fn [ref] (.-name ref))) (>! result)))
-       #(close! promise-chan))
+       #(close! result))
       result))
   (peer-load [this filename]
     (let [result (chan 1)
@@ -129,7 +129,7 @@
           (.then
            (.put file content (metadata iv))
            #(go (>! result true))
-           #(close! promise-chan))
+           #(do (println "encryption failed") (js/console.log %1) (close! result)))
           (close! result)))
       result)))
 
@@ -141,13 +141,26 @@
         username (config "username")
         password (config "password")
         stg-key  (config "stg-key")
-        app (try
-              (firebase/initializeApp #js{:apiKey apikey
-                                          :storageBucket bucket}
-                                      app-name)
-              (catch js/Object e (println e) (firebase/app app-name)))]
-    (.then
-     (.signInWithEmailAndPassword (.auth app) username password)
-     #(go (>! result (FirebaseBookmarkStorage. domain app stg-key)))
-     #(close! result))
+        app-promise (promise-chan)
+        initialize #(firebase/initializeApp
+                      #js{:apiKey apikey
+                          :storageBucket bucket}
+                      app-name)]
+    (go
+      (try
+        (>! app-promise (initialize))
+        (catch
+          js/Object
+          e
+          (println e)
+          (.then
+            (.delete (firebase/app app-name)
+            #(>! app-promise (initialize))
+            #(close! app-promise))))))
+    (go
+      (when-some [app (<! app-promise)]
+        (.then
+          (.signInWithEmailAndPassword (.auth app) username password)
+          #(go (>! result (FirebaseBookmarkStorage. domain app stg-key)))
+          #(close! result))))
     result))
