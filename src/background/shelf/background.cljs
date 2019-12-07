@@ -350,6 +350,9 @@
       (fold-bookmark-tree- peer-tree get-children add-bookmark v)
       [v tree])))
 
+;; ---------------------------
+;; starting point
+;; ---------------------------
 (runonce
  (let [browser-storage (browser-storage/get-local)
        config-srv (config/load browser-storage)

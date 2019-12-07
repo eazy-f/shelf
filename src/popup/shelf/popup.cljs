@@ -83,6 +83,25 @@
          (.preventDefault event))))
     form))
 
+(defn- get-peer-list [port]
+  ;FIXME: uncomment
+  ;(list {:name "me" :status "ok"})
+  '())
+
+(defn- build-peer-info [peer]
+  (let [peer-name (:name peer)
+        peer-status (:status peer)
+        name (gdom/createDom
+                "div" #js{:class "peer-detail"}
+                (gdom/createDom "text" nil peer-name))
+        status (gdom/createDom
+                 "div" #js{:class "peer-detail"}
+                 (gdom/createDom "text" nil peer-status))]
+    (gdom/createDom "div" #js{:class "peer-card"} name status)))
+
+(defn- build-peer-list [peers]
+  (map build-peer-info peers))
+
 (defn- logout-button [port]
   (let [button (gdom/createDom "button" #js{:type "button"} "Logout")]
     (.addEventListener
@@ -92,8 +111,12 @@
     button))
 
 (defn- show-active [port]
-  (let [logout (logout-button port)]
-    (gdom/createDom "form" nil logout)))
+  (let [peers (get-peer-list port)
+        logout (logout-button port)]
+    (gdom/createDom "div" nil
+      (apply gdom/createDom "div" nil
+        (build-peer-list peers))
+      (gdom/createDom "form" nil logout))))
 
 (defn- show-welcome [state port]
   (let [logout (logout-button port)

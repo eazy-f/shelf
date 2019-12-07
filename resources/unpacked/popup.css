@@ -1,3 +1,8 @@
 form.config input {
     width: 60pt;
 }
+
+div.peer-detail {
+    display: inline-block;
+    padding: 2pt;
+}
